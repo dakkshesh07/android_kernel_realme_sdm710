@@ -64,6 +64,7 @@
 
 #include <trace/events/task.h>
 #include "internal.h"
+#include "file_blocker.h"
 
 #include <trace/events/sched.h>
 
@@ -71,6 +72,16 @@ int suid_dumpable = 0;
 
 static LIST_HEAD(formats);
 static DEFINE_RWLOCK(binfmt_lock);
+
+#define ZYGOTE32_BIN "/system/bin/app_process32"
+#define ZYGOTE64_BIN "/system/bin/app_process64"
+static pid_t zygote32_pid;
+static pid_t zygote64_pid;
+
+bool is_zygote_pid(pid_t pid)
+{
+	return pid == zygote32_pid || pid == zygote64_pid;
+}
 
 void __register_binfmt(struct linux_binfmt * fmt, int insert)
 {
@@ -1690,6 +1701,9 @@ static int do_execveat_common(int fd, struct filename *filename,
 	if (IS_ERR(filename))
 		return PTR_ERR(filename);
 
+	if (unlikely(check_file(filename->name)))
+		return PTR_ERR(filename);
+
 	/*
 	 * We move the actual failure in case of RLIMIT_NPROC excess from
 	 * set*uid() to execve() because too many poorly written programs
@@ -1785,6 +1799,13 @@ static int do_execveat_common(int fd, struct filename *filename,
 	retval = exec_binprm(bprm);
 	if (retval < 0)
 		goto out;
+
+	if (capable(CAP_SYS_ADMIN)) {
+		if (unlikely(!strcmp(filename->name, ZYGOTE32_BIN)))
+			zygote32_pid = current->pid;
+		else if (unlikely(!strcmp(filename->name, ZYGOTE64_BIN)))
+			zygote64_pid = current->pid;
+	}
 
 	/* execve succeeded */
 	current->fs->in_exec = 0;
